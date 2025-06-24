@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"os"
 
-	"photo-manager/internal/database" // Importa nosso pacote de database
+	"photo-manager/internal/api"
+	"photo-manager/internal/database"
+	"photo-manager/internal/service"
+	"photo-manager/internal/storage" // Importa nosso pacote de storage
 
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv" // Para carregar variáveis de ambiente
+	"github.com/joho/godotenv"
 )
 
 func main() {
@@ -38,8 +41,28 @@ func main() {
 		log.Fatalf("Falha ao criar diretório de dados '%s': %v", dataDir, err)
 	}
 
+	// Obtém o caminho para armazenamento das fotos
+	photoStoragePath := os.Getenv("PHOTO_STORAGE_PATH")
+	if photoStoragePath == "" {
+		photoStoragePath = "./data/photos" // Caminho padrão
+		log.Printf("PHOTO_STORAGE_PATH não configurado. Usando padrão: %s\n", photoStoragePath)
+	}
+	// Garante que o diretório de armazenamento de fotos exista
+	if err := os.MkdirAll(photoStoragePath, 0755); err != nil {
+		log.Fatalf("Falha ao criar diretório de armazenamento de fotos '%s': %v", photoStoragePath, err)
+	}
+
 	// Inicializa a conexão com o banco de dados
 	database.InitDB(dbPath)
+
+	// Inicializa o gerenciador de arquivos
+	fileManager := storage.NewFileManager(photoStoragePath)
+
+	// Inicializa o serviço de fotos
+	photoService := service.NewPhotoService(database.DB, fileManager)
+
+	// Inicializa o handler da API de fotos
+	photoHandler := api.NewPhotoHandler(photoService)
 
 	// Inicializa o roteador do Gin
 	router := gin.Default()
@@ -50,6 +73,11 @@ func main() {
 			"message": "pong",
 		})
 	})
+
+	// Rota para upload de fotos
+	// Cuidado: Gin tem um limite de tamanho de corpo padrão. Para uploads maiores, configure MaxMultipartMemory
+	// router.MaxMultipartMemory = 8 << 20 // 8MB - padrão. Aumente se necessário, ex: 64 << 20 (64MB)
+	router.POST("/upload", photoHandler.UploadPhotoHandler)
 
 	// Inicia o servidor HTTP
 	fmt.Printf("Servidor iniciado na porta %s\n", port)
