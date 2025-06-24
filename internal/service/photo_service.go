@@ -35,8 +35,6 @@ func (s *PhotoService) UploadPhoto(file *multipart.FileHeader) (*database.Photo,
 	uploadDate := time.Now()
 
 	// 1. Salva o arquivo temporariamente para extração EXIF e hash
-	// Criar um diretório temporário ou usar um sistema de fluxo de dados mais eficiente para arquivos grandes.
-	// Por simplicidade, vamos salvar em um local temporário no disco.
 	tempDir := filepath.Join(os.TempDir(), "photo-manager-temp")
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return nil, fmt.Errorf("não foi possível criar diretório temporário: %w", err)
@@ -68,15 +66,18 @@ func (s *PhotoService) UploadPhoto(file *multipart.FileHeader) (*database.Photo,
 		return nil, fmt.Errorf("erro ao extrair dados EXIF: %w", err)
 	}
 
-	// Determina a data de organização (EXIF como preferência, senão data de upload)
-	var photoOrganizeDate time.Time
-	var exifDateTime *time.Time
+	// === CORREÇÃO AQUI: Priorizar data EXIF para organização e metadados ===
+	var photoOrganizeDate time.Time // Data usada para organizar no sistema de arquivos
+	var exifDateTime *time.Time     // Data para ser salva no banco de dados (pode ser nil)
+
 	if exifData != nil && exifData.DateTime != nil {
-		photoOrganizeDate = *exifData.DateTime
-		exifDateTime = exifData.DateTime
+		photoOrganizeDate = *exifData.DateTime // Usa a data EXIF para organização
+		exifDateTime = exifData.DateTime       // Salva a data EXIF para o DB
 	} else {
-		photoOrganizeDate = uploadDate
+		photoOrganizeDate = uploadDate // Se não houver EXIF, usa a data de upload para organização
+		exifDateTime = nil             // Garante que o campo EXIF no DB seja nil
 	}
+	// =====================================================================
 
 	// 3. Calcula o hash da foto (MD5 por simplicidade, SHA256 é mais robusto)
 	hash, err := calculateMD5Hash(tempFilePath)
@@ -96,6 +97,7 @@ func (s *PhotoService) UploadPhoto(file *multipart.FileHeader) (*database.Photo,
 	}
 
 	// 5. Salva a foto no sistema de arquivos na estrutura ano/mês
+	// Agora `photoOrganizeDate` tem a lógica correta (EXIF ou upload)
 	storedPath, err := s.FileManager.SavePhoto(file, photoOrganizeDate)
 	if err != nil {
 		return nil, fmt.Errorf("não foi possível salvar a foto no armazenamento: %w", err)
@@ -105,20 +107,17 @@ func (s *PhotoService) UploadPhoto(file *multipart.FileHeader) (*database.Photo,
 	photo := database.Photo{
 		Filename:   file.Filename,
 		StoredPath: storedPath,
-		UploadDate: uploadDate,
-		ExifDate:   exifDateTime,
+		UploadDate: uploadDate,   // Data de upload sempre será a data real do upload
+		ExifDate:   exifDateTime, // Data EXIF, pode ser nil
 		Hash:       hash,
 		FileSize:   file.Size,
-		MimeType:   file.Header.Get("Content-Type"), // Tipo MIME do upload
-		// Largura e Altura podem ser extraídas com outra biblioteca de imagem se necessário (image/jpeg, etc.)
-		// Por enquanto, deixamos em 0
-		Width:  0,
-		Height: 0,
+		MimeType:   file.Header.Get("Content-Type"),
+		Width:      0, // A ser preenchido por uma biblioteca de processamento de imagem
+		Height:     0, // A ser preenchido por uma biblioteca de processamento de imagem
 	}
 
 	// 7. Salva os metadados da foto no banco de dados
 	if result := s.DB.Create(&photo); result.Error != nil {
-		// Se falhar a gravação no DB, tentar remover o arquivo salvo para evitar lixo
 		os.Remove(storedPath)
 		return nil, fmt.Errorf("não foi possível salvar os metadados da foto no banco de dados: %w", result.Error)
 	}

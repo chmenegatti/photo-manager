@@ -79,6 +79,10 @@ func main() {
 	// router.MaxMultipartMemory = 8 << 20 // 8MB - padrão. Aumente se necessário, ex: 64 << 20 (64MB)
 	router.POST("/upload", photoHandler.UploadPhotoHandler)
 
+	// Novas rotas para busca e linha do tempo
+	router.GET("/photos", photoHandler.GetPhotosHandler)
+	router.GET("/photos/timeline", photoHandler.GetPhotosTimelineHandler)
+
 	// Inicia o servidor HTTP
 	fmt.Printf("Servidor iniciado na porta %s\n", port)
 	log.Fatal(router.Run(":" + port)) // Inicia o servidor na porta especificada
