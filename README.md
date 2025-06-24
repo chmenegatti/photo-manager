@@ -68,7 +68,7 @@ photo-manager/
 
 ---
 
-#### `.env.example`
+### `.env.example`
 
 ```dotenv
 APP_PORT=8080
