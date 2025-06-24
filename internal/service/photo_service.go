@@ -141,3 +141,117 @@ func calculateMD5Hash(filePath string) (string, error) {
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
+
+type PhotoFilter struct {
+	Year     int
+	Month    int
+	Filename string
+	Tag      string
+	Offset   int
+	Limit    int
+	OrderBy  string // Campo para ordenação (ex: "exif_date DESC", "upload_date ASC")
+}
+
+// GetPhotos busca fotos com base nos filtros fornecidos.
+func (s *PhotoService) GetPhotos(filter PhotoFilter) ([]database.Photo, error) {
+	query := s.DB.Model(&database.Photo{})
+
+	if filter.Year != 0 {
+		// Filtra por ano (tanto EXIF quanto UploadDate)
+		// SQLite não tem funções DATE_PART, então usamos BETWEEN para o início e fim do ano.
+		startDate := time.Date(filter.Year, time.January, 1, 0, 0, 0, 0, time.UTC)
+		endDate := startDate.AddDate(1, 0, 0).Add(-time.Nanosecond) // Fim do ano
+		query = query.Where("(exif_date BETWEEN ? AND ?) OR (upload_date BETWEEN ? AND ?)", startDate, endDate, startDate, endDate)
+	}
+
+	if filter.Month != 0 {
+		if filter.Year == 0 {
+			// Se o mês for especificado sem o ano, é mais complexo e pode ser ineficiente em grandes bases.
+			// Para SQLite, não há função nativa MONTH().
+			// Uma solução robusta exigiria um campo extra para mês/ano ou uma consulta mais complexa.
+			// Por simplicidade, vamos exigir o ano se o mês for filtrado por enquanto, ou ignorar se o ano não estiver presente.
+			// Consideração futura: Adicionar colunas `photo_year` e `photo_month` na tabela `photos` para indexação mais eficiente.
+			return nil, fmt.Errorf("filtrar por mês requer que o ano também seja especificado")
+		}
+		// Filtra por mês (assumindo que o ano já foi filtrado ou será)
+		startDate := time.Date(filter.Year, time.Month(filter.Month), 1, 0, 0, 0, 0, time.UTC)
+		endDate := startDate.AddDate(0, 1, 0).Add(-time.Nanosecond) // Fim do mês
+		query = query.Where("(exif_date BETWEEN ? AND ?) OR (upload_date BETWEEN ? AND ?)", startDate, endDate, startDate, endDate)
+	}
+
+	if filter.Filename != "" {
+		query = query.Where("filename LIKE ?", "%"+filter.Filename+"%")
+	}
+
+	if filter.Tag != "" {
+		// Busca por tags (assumindo tags separadas por vírgula)
+		query = query.Where("tags LIKE ?", "%"+filter.Tag+"%")
+	}
+
+	// Ordenação
+	if filter.OrderBy != "" {
+		query = query.Order(filter.OrderBy)
+	} else {
+		// Ordem padrão: mais recente primeiro, priorizando EXIF, depois UploadDate
+		query = query.Order("exif_date DESC").Order("upload_date DESC")
+	}
+
+	// Paginação
+	if filter.Limit > 0 {
+		query = query.Limit(filter.Limit)
+	}
+	if filter.Offset > 0 {
+		query = query.Offset(filter.Offset)
+	}
+
+	var photos []database.Photo
+	if result := query.Find(&photos); result.Error != nil {
+		return nil, fmt.Errorf("erro ao buscar fotos: %w", result.Error)
+	}
+
+	return photos, nil
+}
+
+// GetPhotosByTimeline retorna fotos agrupadas por ano e mês para exibição em linha do tempo.
+// Esta função pode ser otimizada para buscar apenas os anos/meses existentes primeiro.
+func (s *PhotoService) GetPhotosByTimeline(limitPerMonth int) (map[int]map[int][]database.Photo, error) {
+	// Poderíamos buscar todos os anos/meses distintos e depois buscar as fotos para cada um,
+	// mas para simplicidade inicial, vamos buscar as fotos e agrupá-las em memória.
+	// Para grandes volumes, seria melhor uma abordagem de paginação/streaming ou buscar apenas as fotos do "mês ativo".
+
+	var photos []database.Photo
+	// Pega todas as fotos, ordenadas para facilitar o agrupamento
+	// A ordem preferencial é pela data EXIF, e depois pela data de upload
+	result := s.DB.Order("exif_date DESC").Order("upload_date DESC").Find(&photos)
+	if result.Error != nil {
+		return nil, fmt.Errorf("erro ao buscar fotos para linha do tempo: %w", result.Error)
+	}
+
+	timeline := make(map[int]map[int][]database.Photo) // year -> month -> []Photo
+
+	for _, photo := range photos {
+		var dateToUse time.Time
+		if photo.ExifDate != nil {
+			dateToUse = *photo.ExifDate
+		} else {
+			dateToUse = photo.UploadDate
+		}
+
+		year := dateToUse.Year()
+		month := int(dateToUse.Month())
+
+		if _, ok := timeline[year]; !ok {
+			timeline[year] = make(map[int][]database.Photo)
+		}
+		if _, ok := timeline[year][month]; !ok {
+			timeline[year][month] = []database.Photo{}
+		}
+
+		// Adiciona a foto se o limite por mês ainda não foi atingido
+		if limitPerMonth == 0 || len(timeline[year][month]) < limitPerMonth {
+			timeline[year][month] = append(timeline[year][month], photo)
+		}
+	}
+
+	return timeline, nil
+}
